@@ -308,3 +308,136 @@ describe('updateTransaction — atomicity on validation failure', () => {
     expect(client._calls).toHaveLength(0);
   });
 });
+
+describe('updateTransaction — category + INCOME/INTERNAL_TRANSFER combo rejection', () => {
+  test('category_id + type=INCOME: rejected client-side, no GraphQL write', async () => {
+    const { tools, client } = makeTools();
+    await expect(
+      tools.updateTransaction({
+        transaction_id: 'txn1',
+        category_id: 'groceries',
+        type: 'INCOME',
+      })
+    ).rejects.toThrow(/categor/i);
+    expect(client._calls).toHaveLength(0);
+  });
+
+  test('category_id + type=INTERNAL_TRANSFER: rejected client-side, no GraphQL write', async () => {
+    const { tools, client } = makeTools();
+    await expect(
+      tools.updateTransaction({
+        transaction_id: 'txn1',
+        category_id: 'groceries',
+        type: 'INTERNAL_TRANSFER',
+      })
+    ).rejects.toThrow(/categor/i);
+    expect(client._calls).toHaveLength(0);
+  });
+
+  test('category_id + type=REGULAR: allowed (REGULAR may carry a category)', async () => {
+    const { tools, client } = makeTools();
+    const result = await tools.updateTransaction({
+      transaction_id: 'txn1',
+      category_id: 'groceries',
+      type: 'REGULAR',
+    });
+    expect(result.success).toBe(true);
+    expect(result.updated).toContain('category_id');
+    expect(result.updated).toContain('type');
+    expect(client._calls).toHaveLength(1);
+  });
+});
+
+describe('updateTransaction — fail-closed read-back verification', () => {
+  test('server returns a different type than requested: throws (treated as no-op write)', async () => {
+    // Simulate the documented silent no-op: server echoes the OLD type regardless
+    // of what was requested.
+    const { tools, client } = makeTools({
+      responses: {
+        EditTransaction: (vars: any) => ({
+          editTransaction: {
+            transaction: {
+              id: vars.id,
+              categoryId: vars.input.categoryId ?? 'food',
+              userNotes: vars.input.userNotes ?? null,
+              isReviewed: false,
+              type: 'REGULAR',
+              tags: (vars.input.tagIds ?? []).map((id: string) => ({ id })),
+            },
+          },
+        }),
+      },
+    });
+    await expect(
+      tools.updateTransaction({
+        transaction_id: 'txn1',
+        type: 'INTERNAL_TRANSFER',
+      })
+    ).rejects.toThrow(/did not persist|no-op/i);
+    // The write was attempted (server contacted) before verification failed.
+    expect(client._calls).toHaveLength(1);
+  });
+
+  test('server returns a different category than requested: throws', async () => {
+    const { tools } = makeTools({
+      responses: {
+        EditTransaction: (vars: any) => ({
+          editTransaction: {
+            transaction: {
+              id: vars.id,
+              categoryId: 'food', // ignores the requested 'groceries'
+              userNotes: vars.input.userNotes ?? null,
+              isReviewed: false,
+              type: vars.input.type ?? 'REGULAR',
+              tags: (vars.input.tagIds ?? []).map((id: string) => ({ id })),
+            },
+          },
+        }),
+      },
+    });
+    await expect(
+      tools.updateTransaction({
+        transaction_id: 'txn1',
+        category_id: 'groceries',
+      })
+    ).rejects.toThrow(/did not persist|no-op/i);
+  });
+
+  test('server persists the requested values: succeeds (verification passes)', async () => {
+    const { tools } = makeTools();
+    const result = await tools.updateTransaction({
+      transaction_id: 'txn1',
+      type: 'INTERNAL_TRANSFER',
+    });
+    expect(result.success).toBe(true);
+    expect(result.updated).toContain('type');
+  });
+});
+
+describe('updateTransaction — optimistic cache patch skipped for type writes', () => {
+  test('type write does not patch the cached category', async () => {
+    const { tools, mockDb } = makeTools();
+    let patched = false;
+    (mockDb as any).patchCachedTransaction = () => {
+      patched = true;
+    };
+    await tools.updateTransaction({
+      transaction_id: 'txn1',
+      type: 'INTERNAL_TRANSFER',
+    });
+    expect(patched).toBe(false);
+  });
+
+  test('non-type write still patches the cache', async () => {
+    const { tools, mockDb } = makeTools();
+    let patched = false;
+    (mockDb as any).patchCachedTransaction = () => {
+      patched = true;
+    };
+    await tools.updateTransaction({
+      transaction_id: 'txn1',
+      category_id: 'groceries',
+    });
+    expect(patched).toBe(true);
+  });
+});

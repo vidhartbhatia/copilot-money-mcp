@@ -2418,9 +2418,12 @@ export class CopilotMoneyTools {
    * preserved. note="" clears the note. tag_ids=[] clears all tags. `type`
    * sets the transaction's high-level classification (REGULAR | INCOME |
    * INTERNAL_TRANSFER) — useful for excluding internal/transfer mechanics from
-   * spending. The server enforces semantic constraints (e.g. only net-positive
-   * amounts may be INCOME; INCOME/INTERNAL_TRANSFER transactions cannot also be
-   * categorized) and rejects invalid combinations.
+   * spending. INCOME/INTERNAL_TRANSFER transactions cannot also be categorized,
+   * so this method rejects a category_id + INCOME/INTERNAL_TRANSFER combination
+   * locally before writing. Copilot is also expected to enforce other semantic
+   * constraints server-side (e.g. only net-positive amounts may be INCOME); the
+   * server is the authority, and every write is read back and verified — a write
+   * the server did not actually persist throws rather than reporting success.
    *
    * Other legacy fields (name, excluded, goal_id) are not writable through the
    * GraphQL EditTransaction mutation.
@@ -2495,6 +2498,20 @@ export class CopilotMoneyTools {
           `type must be one of: REGULAR, INCOME, INTERNAL_TRANSFER. Got: ${args.type}`
         );
       }
+      // Copilot does not allow INCOME or INTERNAL_TRANSFER transactions to carry a
+      // category. Reject the contradictory combination locally instead of issuing a
+      // write whose category half the server would silently drop.
+      if (
+        (args.type === 'INCOME' || args.type === 'INTERNAL_TRANSFER') &&
+        'category_id' in args &&
+        args.category_id !== undefined
+      ) {
+        throw new Error(
+          `Cannot set category_id together with type ${args.type}: Copilot does not allow ` +
+            `INCOME or INTERNAL_TRANSFER transactions to carry a category. Set the type alone ` +
+            `(its existing category is cleared server-side), or use type REGULAR to keep a category.`
+        );
+      }
     }
     // Map MCP fields → EditTransaction input shape.
     const input: {
@@ -2531,16 +2548,52 @@ export class CopilotMoneyTools {
       };
       const updated = Object.keys(result.changed).map((k) => graphqlToApiName[k] ?? k);
 
-      // Optimistic cache patch: writes to the in-memory cache so a subsequent
-      // read returns the new value without needing refresh_database + re-decode.
-      const patch: Partial<Transaction> = {};
-      if ('category_id' in args && args.category_id !== undefined)
-        patch.category_id = args.category_id;
-      if ('note' in args && args.note !== undefined) patch.user_note = args.note;
-      if ('tag_ids' in args && args.tag_ids !== undefined) patch.tag_ids = args.tag_ids;
-      if (Object.keys(patch).length > 0) {
-        this.db.patchCachedTransaction(transaction_id, patch);
-        this.liveDb?.patchLiveTransaction(transaction_id, patch);
+      // Fail-closed verification. EditTransaction has a documented silent no-op bug
+      // (it can return success without applying the edit), and `type` acceptance was
+      // only proven at the schema level. Compare every requested field against the
+      // server's read-back value and throw on any mismatch, so a no-op or partial
+      // write is never reported as success on real financial data.
+      const sameSet = (a: string[], b: string[]) =>
+        a.length === b.length && [...a].sort().join('\u0000') === [...b].sort().join('\u0000');
+      const mismatches: string[] = [];
+      if (input.type !== undefined && result.changed.type !== input.type)
+        mismatches.push(
+          `type (requested ${input.type}, server has ${result.changed.type ?? 'none'})`
+        );
+      if (input.categoryId !== undefined && result.changed.categoryId !== input.categoryId)
+        mismatches.push(
+          `category_id (requested ${input.categoryId}, server has ${result.changed.categoryId ?? 'none'})`
+        );
+      if (
+        input.userNotes !== undefined &&
+        (result.changed.userNotes ?? '') !== (input.userNotes ?? '')
+      )
+        mismatches.push('note');
+      if (input.tagIds !== undefined && !sameSet(result.changed.tagIds ?? [], input.tagIds))
+        mismatches.push('tag_ids');
+      if (mismatches.length > 0) {
+        throw new Error(
+          `update_transaction was reported as applied but the server did not persist: ` +
+            `${mismatches.join('; ')}. Treat this as a failed/no-op write and re-read the transaction.`
+        );
+      }
+
+      // Optimistic cache patch: writes the (now server-verified) values to the
+      // in-memory cache so a subsequent read returns them without a refresh re-decode.
+      // Skipped entirely when `type` is involved: the cache has no clean
+      // REGULAR/INCOME/INTERNAL_TRANSFER field, and an INCOME/INTERNAL_TRANSFER write
+      // clears the server-side category — so any local patch would diverge. In that
+      // case we let the next refresh_database re-decode authoritative state.
+      if (!('type' in args && args.type !== undefined)) {
+        const patch: Partial<Transaction> = {};
+        if ('category_id' in args && args.category_id !== undefined)
+          patch.category_id = args.category_id;
+        if ('note' in args && args.note !== undefined) patch.user_note = args.note;
+        if ('tag_ids' in args && args.tag_ids !== undefined) patch.tag_ids = args.tag_ids;
+        if (Object.keys(patch).length > 0) {
+          this.db.patchCachedTransaction(transaction_id, patch);
+          this.liveDb?.patchLiveTransaction(transaction_id, patch);
+        }
       }
 
       return {
@@ -4592,9 +4645,12 @@ export function createWriteToolSchemas(): ToolSchema[] {
         'any combination of category_id, note, tag_ids, or type — only specified fields are changed. ' +
         'Pass note="" to clear the note. Pass tag_ids=[] to clear all tags. type sets the high-level ' +
         'classification (REGULAR, INCOME, or INTERNAL_TRANSFER) — use INTERNAL_TRANSFER to exclude ' +
-        'internal/transfer mechanics from spending. The server enforces semantics (e.g. only ' +
-        'net-positive amounts may be INCOME; INCOME/INTERNAL_TRANSFER transactions cannot also carry ' +
-        'a category) and rejects invalid combinations. At least one mutable field must be provided ' +
+        'internal/transfer mechanics from spending. INCOME/INTERNAL_TRANSFER transactions cannot also ' +
+        'carry a category, so passing category_id together with INCOME or INTERNAL_TRANSFER is ' +
+        'rejected; pass the type alone (its category is cleared) or use REGULAR to keep a category. ' +
+        'Copilot is expected to enforce other semantics server-side (e.g. only net-positive amounts ' +
+        'may be INCOME); every write is read back and verified, and a change the server did not ' +
+        'persist returns an error instead of success. At least one mutable field must be provided ' +
         'besides transaction_id. Other fields (name, excluded, goal_id) are not writable through the ' +
         'GraphQL API.',
       inputSchema: {
@@ -4623,8 +4679,9 @@ export function createWriteToolSchemas(): ToolSchema[] {
             enum: ['REGULAR', 'INCOME', 'INTERNAL_TRANSFER'],
             description:
               'High-level transaction classification. INTERNAL_TRANSFER excludes the transaction ' +
-              'from spending; INCOME requires a net-positive amount. Setting INCOME or ' +
-              'INTERNAL_TRANSFER may clear/conflict with a category (server-enforced).',
+              'from spending; INCOME requires a net-positive amount. INCOME and INTERNAL_TRANSFER ' +
+              'cannot carry a category — do not pass category_id with them (their existing category ' +
+              'is cleared server-side).',
           },
         },
         required: ['transaction_id'],
