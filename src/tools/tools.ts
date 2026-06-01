@@ -2414,17 +2414,23 @@ export class CopilotMoneyTools {
   /**
    * Update one or more fields on a transaction in a single atomic write.
    *
-   * Supported fields: category_id, note, tag_ids. Omitted fields are preserved.
-   * note="" clears the note. tag_ids=[] clears all tags. Other legacy fields
-   * (name, excluded, internal_transfer, goal_id) are not writable through the
-   * GraphQL EditTransaction mutation and were removed from this tool when the
-   * backend was migrated.
+   * Supported fields: category_id, note, tag_ids, type. Omitted fields are
+   * preserved. note="" clears the note. tag_ids=[] clears all tags. `type`
+   * sets the transaction's high-level classification (REGULAR | INCOME |
+   * INTERNAL_TRANSFER) — useful for excluding internal/transfer mechanics from
+   * spending. The server enforces semantic constraints (e.g. only net-positive
+   * amounts may be INCOME; INCOME/INTERNAL_TRANSFER transactions cannot also be
+   * categorized) and rejects invalid combinations.
+   *
+   * Other legacy fields (name, excluded, goal_id) are not writable through the
+   * GraphQL EditTransaction mutation.
    */
   async updateTransaction(args: {
     transaction_id: string;
     category_id?: string;
     note?: string;
     tag_ids?: string[];
+    type?: TransactionType;
   }): Promise<{
     success: true;
     transaction_id: string;
@@ -2436,7 +2442,7 @@ export class CopilotMoneyTools {
     // Reject unknown fields (equivalent to JSON Schema additionalProperties: false,
     // but re-checked here as a defense in depth in case the method is called directly
     // without going through the MCP dispatch layer).
-    const allowedKeys = new Set(['transaction_id', 'category_id', 'note', 'tag_ids']);
+    const allowedKeys = new Set(['transaction_id', 'category_id', 'note', 'tag_ids', 'type']);
     for (const key of Object.keys(args)) {
       if (!allowedKeys.has(key)) {
         throw new Error(`update_transaction: unknown field "${key}"`);
@@ -2482,17 +2488,27 @@ export class CopilotMoneyTools {
         }
       }
     }
+    if ('type' in args && args.type !== undefined) {
+      const VALID_TYPES: TransactionType[] = ['REGULAR', 'INCOME', 'INTERNAL_TRANSFER'];
+      if (!VALID_TYPES.includes(args.type)) {
+        throw new Error(
+          `type must be one of: REGULAR, INCOME, INTERNAL_TRANSFER. Got: ${args.type}`
+        );
+      }
+    }
     // Map MCP fields → EditTransaction input shape.
     const input: {
       categoryId?: string;
       userNotes?: string | null;
       tagIds?: string[];
       isReviewed?: boolean;
+      type?: TransactionType;
     } = {};
     if ('category_id' in args && args.category_id !== undefined)
       input.categoryId = args.category_id;
     if ('note' in args && args.note !== undefined) input.userNotes = args.note;
     if ('tag_ids' in args && args.tag_ids !== undefined) input.tagIds = args.tag_ids;
+    if ('type' in args && args.type !== undefined) input.type = args.type;
 
     if (!txn.account_id || !txn.item_id) {
       throw new Error(`Transaction ${transaction_id} missing account_id or item_id in local cache`);
@@ -2511,6 +2527,7 @@ export class CopilotMoneyTools {
         userNotes: 'note',
         tagIds: 'tag_ids',
         isReviewed: 'reviewed',
+        type: 'type',
       };
       const updated = Object.keys(result.changed).map((k) => graphqlToApiName[k] ?? k);
 
@@ -4571,12 +4588,15 @@ export function createWriteToolSchemas(): ToolSchema[] {
     {
       name: 'update_transaction',
       description:
-        "Update a single transaction's category, note, or tags. Pass transaction_id plus " +
-        'any combination of category_id, note, or tag_ids — only specified fields are changed. ' +
-        'Pass note="" to clear the note. Pass tag_ids=[] to clear all tags. At least one mutable ' +
-        'field must be provided besides transaction_id. Other fields (name, excluded, ' +
-        'internal_transfer, goal_id) are not writable through the GraphQL API and were removed ' +
-        'from this tool when the backend was migrated.',
+        "Update a single transaction's category, note, tags, or type. Pass transaction_id plus " +
+        'any combination of category_id, note, tag_ids, or type — only specified fields are changed. ' +
+        'Pass note="" to clear the note. Pass tag_ids=[] to clear all tags. type sets the high-level ' +
+        'classification (REGULAR, INCOME, or INTERNAL_TRANSFER) — use INTERNAL_TRANSFER to exclude ' +
+        'internal/transfer mechanics from spending. The server enforces semantics (e.g. only ' +
+        'net-positive amounts may be INCOME; INCOME/INTERNAL_TRANSFER transactions cannot also carry ' +
+        'a category) and rejects invalid combinations. At least one mutable field must be provided ' +
+        'besides transaction_id. Other fields (name, excluded, goal_id) are not writable through the ' +
+        'GraphQL API.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -4597,6 +4617,14 @@ export function createWriteToolSchemas(): ToolSchema[] {
             type: 'array',
             items: { type: 'string' },
             description: 'Tag IDs to set. Pass empty array to clear all tags.',
+          },
+          type: {
+            type: 'string',
+            enum: ['REGULAR', 'INCOME', 'INTERNAL_TRANSFER'],
+            description:
+              'High-level transaction classification. INTERNAL_TRANSFER excludes the transaction ' +
+              'from spending; INCOME requires a net-positive amount. Setting INCOME or ' +
+              'INTERNAL_TRANSFER may clear/conflict with a category (server-enforced).',
           },
         },
         required: ['transaction_id'],

@@ -23,6 +23,7 @@ type EditTxnResponse = {
       categoryId: string;
       userNotes: string | null;
       isReviewed: boolean;
+      type: string;
       tags: Array<{ id: string }>;
     };
   };
@@ -36,6 +37,7 @@ function makeEchoResponse(): (vars: any) => EditTxnResponse {
         categoryId: vars.input.categoryId ?? 'food',
         userNotes: vars.input.userNotes ?? null,
         isReviewed: vars.input.isReviewed ?? false,
+        type: vars.input.type ?? 'REGULAR',
         tags: (vars.input.tagIds ?? []).map((id: string) => ({ id })),
       },
     },
@@ -141,6 +143,27 @@ describe('updateTransaction — single-field mapping to EditTransaction', () => 
       input: { tagIds: [] },
     });
   });
+
+  test('type: dispatches with type input, response maps back to "type"', async () => {
+    const { tools, client } = makeTools();
+    const result = await tools.updateTransaction({
+      transaction_id: 'txn1',
+      type: 'INTERNAL_TRANSFER',
+    });
+    expect(client._calls[0].variables).toMatchObject({
+      input: { type: 'INTERNAL_TRANSFER' },
+    });
+    expect(result.updated).toEqual(['type']);
+  });
+
+  test.each(['REGULAR', 'INCOME', 'INTERNAL_TRANSFER'])(
+    'type: accepts valid value %s',
+    async (type) => {
+      const { tools, client } = makeTools();
+      await tools.updateTransaction({ transaction_id: 'txn1', type: type as any });
+      expect(client._calls[0].variables).toMatchObject({ input: { type } });
+    }
+  );
 });
 
 describe('updateTransaction — multi-field atomic dispatch', () => {
@@ -197,6 +220,14 @@ describe('updateTransaction — validation errors', () => {
     await expect(
       tools.updateTransaction({ transaction_id: 'txn1', bogus_field: 'x' } as any)
     ).rejects.toThrow(/unknown field/i);
+    expect(client._calls).toHaveLength(0);
+  });
+
+  test('invalid type throws and no write is issued', async () => {
+    const { tools, client } = makeTools();
+    await expect(
+      tools.updateTransaction({ transaction_id: 'txn1', type: 'TRANSFER' } as any)
+    ).rejects.toThrow(/REGULAR, INCOME, INTERNAL_TRANSFER/i);
     expect(client._calls).toHaveLength(0);
   });
 
