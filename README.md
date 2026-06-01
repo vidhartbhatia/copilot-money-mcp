@@ -210,7 +210,7 @@ The `period` parameter supports these shortcuts:
 
 ## Authentication & Optional Modes
 
-Both `--live-reads` and `--write` make authenticated calls to Copilot Money's GraphQL API at `app.copilot.money/api/graphql`. They require a **logged-in browser session** against `app.copilot.money` — the server reads the same Firebase refresh token the web app stores in your browser (Chrome, Arc, Safari, or Firefox).
+Both `--live-reads` and `--write` make authenticated calls to Copilot Money's GraphQL API at `app.copilot.money/api/graphql`. They require a **logged-in browser session** against `app.copilot.money` — the server reads the same Firebase refresh token the web app stores in your browser (Chrome, Edge, Arc, Safari, or Firefox).
 
 Default mode requires no authentication and makes zero network requests — reads come from the local LevelDB cache.
 

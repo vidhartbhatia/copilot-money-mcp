@@ -9,13 +9,22 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 describe('BROWSER_CONFIGS', () => {
-  test('defines configs for Chrome, Arc, Safari, and Firefox', () => {
+  test('defines configs for Chrome, Edge, Arc, Safari, and Firefox', () => {
     const names = BROWSER_CONFIGS.map((b) => b.name);
     expect(names).toContain('Chrome');
+    expect(names).toContain('Edge');
     expect(names).toContain('Arc');
     expect(names).toContain('Safari');
     expect(names).toContain('Firefox');
-    expect(names).toHaveLength(4);
+    expect(names).toHaveLength(5);
+  });
+
+  test('Edge config uses Chromium type and Microsoft Edge storage paths', () => {
+    const edge = BROWSER_CONFIGS.find((b) => b.name === 'Edge');
+    expect(edge).toBeDefined();
+    expect(edge?.type).toBe('chromium');
+    expect(edge?.paths.some((p) => p.includes('Microsoft Edge'))).toBe(true);
+    expect(edge?.paths.some((p) => p.includes('https_app.copilot.money'))).toBe(true);
   });
 });
 

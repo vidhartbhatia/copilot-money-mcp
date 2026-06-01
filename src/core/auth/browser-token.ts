@@ -1,7 +1,7 @@
 /**
  * Browser token extractor for Firebase refresh tokens.
  *
- * Searches Chrome, Arc, Safari, and Firefox LevelDB/IndexedDB storage
+ * Searches Chrome, Edge, Arc, Safari, and Firefox LevelDB/IndexedDB storage
  * for Copilot Money Firebase refresh tokens (prefixed with "AMf-").
  */
 
@@ -38,6 +38,24 @@ export const BROWSER_CONFIGS: BrowserConfig[] = [
       ),
       join(homedir(), 'Library/Application Support/Google/Chrome/Default/Local Storage/leveldb'),
       join(homedir(), 'Library/Application Support/Google/Chrome/Profile 1/Local Storage/leveldb'),
+    ],
+    type: 'chromium',
+  },
+  {
+    name: 'Edge',
+    paths: [
+      // Microsoft Edge is Chromium-based; same storage layout as Chrome
+      // under the "Microsoft Edge" support directory.
+      join(
+        homedir(),
+        'Library/Application Support/Microsoft Edge/Default/IndexedDB/https_app.copilot.money_0.indexeddb.leveldb'
+      ),
+      join(homedir(), 'Library/Application Support/Microsoft Edge/Default/Local Storage/leveldb'),
+      join(
+        homedir(),
+        'Library/Application Support/Microsoft Edge/Profile 1/IndexedDB/https_app.copilot.money_0.indexeddb.leveldb'
+      ),
+      join(homedir(), 'Library/Application Support/Microsoft Edge/Profile 1/Local Storage/leveldb'),
     ],
     type: 'chromium',
   },
@@ -170,7 +188,7 @@ function searchSafariDatabases(dbDir: string): string | undefined {
 
 /**
  * Extract a Firebase refresh token from browser local storage.
- * Searches browsers in order: Chrome, Arc, Safari, Firefox.
+ * Searches browsers in order: Chrome, Edge, Arc, Safari, Firefox.
  * @param browserOverrides - Override browser configs for testing
  * @throws Error if no token is found in any browser
  */
